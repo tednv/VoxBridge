@@ -1,0 +1,10 @@
+[package]
+name = "voxbridge"
+version = "0.1.0"
+edition = "2021"
+description = "Runtime-dispatched, per-CPU/GPU-variant whisper.cpp engine loader (C shim + Rust host)."
+license = "MIT"
+repository = "https://github.com/tednv/VoxBridge"
+
+[dependencies]
+libloading = "0.9.0"

@@ -1,0 +1,11 @@
+# Build output (scripts/build-engines.mjs) - not source, regenerated
+dist/
+engines-dist/
+
+# Rust
+target/
+Cargo.lock
+
+# Editor
+.vscode/
+.idea/
