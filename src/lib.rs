@@ -17,6 +17,9 @@ use std::ffi::{c_char, c_float, c_void, CStr, CString};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+pub mod llm;
+pub use llm::{LlmBackend, LlmEngine, LlmModel};
+
 #[cfg(target_os = "windows")]
 const DLL_EXTENSION: &str = "dll";
 #[cfg(target_os = "linux")]

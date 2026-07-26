@@ -8,3 +8,9 @@ repository = "https://github.com/tednv/VoxBridge"
 
 [dependencies]
 libloading = "0.9.0"
+# For LlmBackend::OllamaRemote only - a lightweight blocking HTTP client rather than
+# reqwest/tokio, since this crate is otherwise synchronous FFI loading and shouldn't drag
+# an async runtime in just to support one optional remote-proxy backend.
+ureq = { version = "2", default-features = false, features = ["json", "tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
