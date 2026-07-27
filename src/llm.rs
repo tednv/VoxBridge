@@ -247,6 +247,12 @@ struct OllamaChatRequest<'a> {
     messages: Vec<OllamaMessage<'a>>,
     stream: bool,
     options: OllamaOptions,
+    /// Reasoning models (e.g. the Qwen3 family) default to emitting a `<think>` trace
+    /// before the real answer, which Ollama returns in a separate `thinking` field -
+    /// `content` stays empty until the model finishes reasoning, which a short
+    /// `num_predict` budget (sized for a quick text-cleanup pass, not a long think) may
+    /// never reach. Disabling it goes straight to the answer.
+    think: bool,
 }
 
 #[derive(serde::Deserialize)]
@@ -299,6 +305,7 @@ fn ollama_complete(
         options: OllamaOptions {
             num_predict: if max_tokens > 0 { max_tokens } else { 512 },
         },
+        think: false,
     };
 
     let response = ureq::post(&url)
