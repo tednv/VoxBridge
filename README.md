@@ -77,6 +77,24 @@ remote-proxy path has been verified against a real instance. macOS is not yet im
 (see `scripts/build-engines.mjs`'s `buildMacosVariants` for the intended design). Not yet
 published to crates.io.
 
+## Roadmap
+
+- Add an optional Faster Whisper/CTranslate2 transcription backend behind the stable
+  VoxBridge API. Preserve the current whisper.cpp CPU/Vulkan backend as the default
+  and broad-hardware fallback.
+- Prototype Faster Whisper as a managed sidecar rather than embedding Python in a
+  consuming application. VoxBridge should own its lifecycle, health reporting,
+  model discovery/downloads, preload/unload, cancellation, and normalized transcript
+  results.
+- Expose explicit backend capabilities so consumers can select CTranslate2 CUDA on
+  compatible NVIDIA systems, optimized CTranslate2 CPU elsewhere, or the existing
+  Vulkan path on NVIDIA and AMD hardware.
+- Treat GGML and CTranslate2 model directories as separate artifacts. Switching must
+  preload the requested backend and model, invalidate stale recognition work, and
+  activate only at an utterance boundary.
+- Benchmark latency, word error rate, memory use, packaging size, and failure recovery
+  on Windows and Linux before promoting the backend from experimental status.
+
 ## Building
 
 Requires CMake, a C/C++ toolchain, and (for the Vulkan variant) the Vulkan SDK.
