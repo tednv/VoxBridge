@@ -44,6 +44,10 @@ function parseOutDir() {
 }
 
 const distRoot = parseOutDir();
+const familyFlagIndex = process.argv.indexOf("--family");
+const requestedFamilies = familyFlagIndex !== -1 && process.argv[familyFlagIndex + 1]
+  ? [process.argv[familyFlagIndex + 1]]
+  : ["whisper", "llm"];
 
 // Same MAX_PATH reasoning as CARGO_TARGET_DIR in the voquill app's tauri-runner.mjs:
 // CMake/Ninja build trees nest deeply enough to blow past Windows' ~260 character path
@@ -75,8 +79,8 @@ function commandExists(command) {
  * @param {string[]} extraCmakeFlags - additional -D flags for this variant
  * @param {string} dllExtension - "dll" | "so" | "dylib"
  */
-function buildVariant(variant, extraCmakeFlags, dllExtension) {
-  const buildDir = path.join(buildRoot, variant);
+function buildVariant(target, variant, extraCmakeFlags, dllExtension) {
+  const buildDir = path.join(buildRoot, target, variant);
   const generatorFlags = process.env.CMAKE_GENERATOR ? [] : ["-G", "Ninja"];
 
   run("cmake", [
@@ -86,12 +90,14 @@ function buildVariant(variant, extraCmakeFlags, dllExtension) {
     buildDir,
     ...generatorFlags,
     `-DVOXBRIDGE_VARIANT=${variant}`,
+    `-DVOXBRIDGE_TARGET=${target}`,
     "-DCMAKE_BUILD_TYPE=Release",
     ...extraCmakeFlags,
   ]);
   run("cmake", ["--build", buildDir, "--config", "Release"]);
 
-  const builtName = `voxbridge_engine_${variant}.${dllExtension}`;
+  const family = target === "llm" ? "voxbridge_llm" : "voxbridge_engine";
+  const builtName = `${family}_${variant}.${dllExtension}`;
   return findBuiltLibrary(buildDir, builtName);
 }
 
@@ -136,13 +142,16 @@ function buildWindowsVariants() {
   const platformArchDir = "windows-x64";
   console.log(`\n=== Building VoxBridge engines for ${platformArchDir} ===`);
 
-  copyToDist(buildVariant("cpu-baseline", CPU_BASELINE_FLAGS, "dll"), platformArchDir, "voxbridge_engine_cpu-baseline.dll");
-  copyToDist(buildVariant("cpu-avx2", CPU_AVX2_FLAGS, "dll"), platformArchDir, "voxbridge_engine_cpu-avx2.dll");
+  for (const target of requestedFamilies) {
+    const family = target === "llm" ? "voxbridge_llm" : "voxbridge_engine";
+    copyToDist(buildVariant(target, "cpu-baseline", CPU_BASELINE_FLAGS, "dll"), platformArchDir, `${family}_cpu-baseline.dll`);
+    copyToDist(buildVariant(target, "cpu-avx2", CPU_AVX2_FLAGS, "dll"), platformArchDir, `${family}_cpu-avx2.dll`);
 
-  if (process.env.VULKAN_SDK) {
-    copyToDist(buildVariant("vulkan", VULKAN_FLAGS, "dll"), platformArchDir, "voxbridge_engine_vulkan.dll");
-  } else {
-    console.warn("  VULKAN_SDK not set - skipping vulkan engine variant (GPU mode will be unavailable in this build)");
+    if (process.env.VULKAN_SDK) {
+      copyToDist(buildVariant(target, "vulkan", VULKAN_FLAGS, "dll"), platformArchDir, `${family}_vulkan.dll`);
+    } else {
+      console.warn(`  VULKAN_SDK not set - skipping ${target} vulkan engine variant`);
+    }
   }
 }
 
@@ -155,20 +164,23 @@ function buildLinuxVariants() {
     // arm64 Linux desktops are rare and ggml has no ISA-tiering concept there (same
     // situation as macOS Apple Silicon) - just ship one native-ish CPU build.
     copyToDist(
-      buildVariant("cpu-baseline", ["-DGGML_NATIVE=OFF"], "so"),
+      buildVariant("whisper", "cpu-baseline", ["-DGGML_NATIVE=OFF"], "so"),
       platformArchDir,
       "voxbridge_engine_cpu-baseline.so"
     );
     return;
   }
 
-  copyToDist(buildVariant("cpu-baseline", CPU_BASELINE_FLAGS, "so"), platformArchDir, "voxbridge_engine_cpu-baseline.so");
-  copyToDist(buildVariant("cpu-avx2", CPU_AVX2_FLAGS, "so"), platformArchDir, "voxbridge_engine_cpu-avx2.so");
+  for (const target of requestedFamilies) {
+    const family = target === "llm" ? "voxbridge_llm" : "voxbridge_engine";
+    copyToDist(buildVariant(target, "cpu-baseline", CPU_BASELINE_FLAGS, "so"), platformArchDir, `${family}_cpu-baseline.so`);
+    copyToDist(buildVariant(target, "cpu-avx2", CPU_AVX2_FLAGS, "so"), platformArchDir, `${family}_cpu-avx2.so`);
 
-  if (commandExists("glslc") || process.env.VULKAN_SDK) {
-    copyToDist(buildVariant("vulkan", VULKAN_FLAGS, "so"), platformArchDir, "voxbridge_engine_vulkan.so");
-  } else {
-    console.warn("  Vulkan SDK/glslc not found - skipping vulkan engine variant");
+    if (commandExists("glslc") || process.env.VULKAN_SDK) {
+      copyToDist(buildVariant(target, "vulkan", VULKAN_FLAGS, "so"), platformArchDir, `${family}_vulkan.so`);
+    } else {
+      console.warn(`  Vulkan SDK/glslc not found - skipping ${target} vulkan engine variant`);
+    }
   }
 }
 
