@@ -18,8 +18,7 @@ project(voxbridge_engines LANGUAGES C CXX)
 # its own standalone DLL, there's no symbol collision between variants -
 # unlike GGML_BACKEND_DL, which tries to make ggml itself produce multiple
 # ISA variants of the SAME symbol names as sibling dlopen-able modules
-# within one build. See the consuming app's docs/session-history and
-# docs/ROADMAP.local.md for why that approach was abandoned in favor of this one.
+# within one build. The consuming application therefore builds standalone variants.
 # whisper.cpp and llama.cpp each vendor their own ggml, but since a whisper engine DLL
 # and an llm engine DLL are never built in the same configure run (and only one variant
 # of either family is ever dlopen'd into the process at once), there's no collision

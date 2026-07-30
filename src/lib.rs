@@ -1,16 +1,14 @@
-//! VoxBridge: a runtime-dispatched, per-CPU/GPU-variant whisper.cpp engine loader.
+//! VoxBridge: a focused local speech-recognition and text-refinement runtime adapter.
 //!
-//! Each engine is a self-contained build of whisper.cpp/ggml + a small C ABI
-//! (`native/shim/voxbridge_engine.h`), compiled for a specific CPU ISA target (or a GPU
-//! backend), so multiple variants can coexist on disk without symbol collisions -
-//! unlike `GGML_BACKEND_DL`, which requires MODULE-only libraries and breaks
-//! whisper-rs's static linking.
+//! The crate normalizes established inference backends behind a Rust-facing lifecycle:
+//! runtime-selected whisper.cpp and llama.cpp libraries, an optional managed Faster
+//! Whisper/CTranslate2 worker, and text-only Ollama refinement. It owns backend
+//! capability detection, loading, warmup, caching, fallback, and result adaptation;
+//! consuming applications own recording, documents, agents, history, and UI policy.
 //!
-//! This crate is deliberately decoupled from any particular application: it has no
-//! knowledge of where a consuming app keeps its resources, only how to pick the best
-//! variant given a directory that contains them (see `resolve_engines_dir`). It's meant
-//! to be usable as a normal path (or eventually git) dependency, and to be movable into
-//! its own repository without rework.
+//! VoxBridge is deliberately not a generic provider gateway or inference engine. It
+//! reuses the upstream projects and exposes only the focused runtime boundary required
+//! by local transcription-and-refinement applications.
 
 use libloading::{Library, Symbol};
 use std::ffi::{c_char, c_float, c_void, CStr, CString};
@@ -18,7 +16,12 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 pub mod llm;
+pub mod faster_whisper;
 pub use llm::{LlmBackend, LlmEngine, LlmModel};
+pub use faster_whisper::{
+    FasterWhisperBackend, FasterWhisperConfig, FasterWhisperDevice,
+    FasterWhisperRuntime,
+};
 
 #[cfg(target_os = "windows")]
 const DLL_EXTENSION: &str = "dll";

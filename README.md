@@ -1,103 +1,150 @@
 # VoxBridge
 
-A runtime-dispatched, per-CPU/GPU-variant engine loader for two workloads:
-[whisper.cpp](https://github.com/ggerganov/whisper.cpp) speech-to-text, and (newer)
-[llama.cpp](https://github.com/ggerganov/llama.cpp)-based small-LLM text cleanup, either
-run in-process or proxied to a remote [Ollama](https://ollama.com) instance. VoxBridge
-builds several self-contained engine libraries per workload — one per CPU
-instruction-set tier (a true SSE4.2 floor, an AVX2+FMA fast path) plus a Vulkan
-GPU-accelerated variant — and picks the best one for the running machine at startup via
-real CPUID/GPU-availability detection, instead of shipping one generic build tuned to a
-guess about "safe" hardware.
+VoxBridge is a focused local inference-runtime adapter for applications that combine
+speech recognition with text refinement. It presents a stable Rust-facing boundary
+over established backends:
+
+- [whisper.cpp](https://github.com/ggerganov/whisper.cpp) with runtime-selected
+  processor and Vulkan engine variants
+- optional [Faster Whisper](https://github.com/SYSTRAN/faster-whisper) with
+  [CTranslate2](https://github.com/OpenNMT/CTranslate2) CUDA or optimized processor
+  inference
+- embedded [llama.cpp](https://github.com/ggml-org/llama.cpp) text completion
+- text-only refinement through a local or network [Ollama](https://ollama.com)
+  server
+
+VoxBridge owns backend capability detection, process and model lifecycle, warmup,
+cancellation, caching, fallback, safe replacement, and normalized results. A
+consuming application should not need to know whether a result came from a dynamic
+C++ library, an optional managed worker, a GGML/GGUF artifact, or an Ollama request.
+
+## Scope
+
+VoxBridge is not a universal LLM gateway, hosted service, or generic
+OpenAI-compatible proxy. Projects such as LiteLLM and LocalAI already cover broad
+provider routing. VoxBridge intentionally does not pursue cloud-provider catalogs,
+text-to-speech, image generation, vision, embeddings, or custom inference engines.
+
+Its purpose is narrower: provide the runtime boundary needed by local applications
+such as VoxBridge Compose while reusing mature inference projects. Product-specific
+recording policy, document editing, agents, history, privacy, and interface behavior
+belong in the consuming application.
 
 ## Why
 
-A single statically-built whisper.cpp binary has to pick one CPU instruction-set
-assumption for every user. Get it wrong and it crashes on hardware that doesn't support
-those instructions (a real, recurring class of bug); get it conservative and every user
-pays the performance cost of the lowest common denominator, even on hardware that could
-run several times faster.
+Local desktop applications need more than a one-shot transcription endpoint. They
+need to choose a viable backend for the actual machine, prepare it before a user
+records, report useful progress, cancel or supersede stale work, switch safely, and
+retain a fallback when an optional runtime is unavailable. VoxBridge centralizes that
+mechanical lifecycle without turning application code into backend-specific plumbing.
 
-VoxBridge sidesteps this by building multiple fully self-contained variant libraries —
-each a normal, separately-linked build of whisper.cpp/ggml (or llama.cpp/ggml) with
-different compiler flags — so there's no symbol collision between them (unlike
-`GGML_BACKEND_DL`, which requires MODULE-only libraries and breaks static linking in
-bindings like `whisper-rs`). Exactly one variant is loaded per process, chosen by
-inspecting the actual CPU/GPU at runtime.
+### Runtime-selected native engines
 
-Measured on one development machine, same model and audio: a true SSE4.2 baseline took
-57s where the AVX2 variant took 6.3s — the entire point of dispatching per-CPU instead of
-guessing once at build time.
+A single statically built whisper.cpp or llama.cpp binary must choose one processor
+instruction-set assumption for every user. An aggressive assumption can crash on
+older hardware; a conservative one makes capable machines pay the performance cost
+of the lowest common denominator.
 
-### Why an LLM engine too
+VoxBridge builds multiple self-contained native libraries for each workload: a true
+SSE4.2 floor, an AVX2/FMA fast path, and a Vulkan graphics variant. Exactly one
+variant is loaded for a model after inspecting real processor and graphics
+capabilities. Separate libraries avoid symbol collisions and do not depend on
+`GGML_BACKEND_DL`, whose module-only model does not fit every static binding.
 
-A natural next step for live dictation is context-aware cleanup: fix punctuation, casing,
-and small transcription slips based on what came before. The obvious way to get whisper.cpp
-that context is feeding prior text back in as an `initial_prompt` on the next decode - but
-in practice this is fragile for a continuous-dictation workload. A long or heavily
-punctuated prompt can push whisper.cpp's temperature-fallback retry logic into a bad state,
-producing multi-second stalls and, in the worst case, unrelated hallucinated output, on
-otherwise-ordinary utterances. That's whisper.cpp working as designed for its actual job
-(single-shot, prompt-free transcription of one audio segment) - it's the "feed it a growing
-context prompt every decode" usage pattern that doesn't fit.
+One development comparison using the same model and audio took 57 seconds on the
+SSE4.2 baseline and 6.3 seconds on AVX2. That difference is why dispatch belongs in
+the runtime rather than being guessed once at build time.
 
-So VoxBridge keeps whisper.cpp doing exactly what it's fast and reliable at - decode one
-utterance, prompt-free, as soon as it's spoken - and added a second, independent engine for
-the cleanup pass instead of overloading the first one. A small instruct LLM (embedded via
-llama.cpp, or proxied to a separate Ollama instance) runs asynchronously over already-
-transcribed text, batching a few sentences of real context at a time, entirely decoupled
-from the live transcription stream. Nothing ever blocks on it, and a raw/uncorrected
-fallback is always available if the correction pass fails, gets rejected by a fidelity
-check, or simply hasn't finished yet.
+### Separate recognition and refinement
+
+Growing Whisper prompts are a fragile way to edit continuous dictation. Long or
+heavily punctuated prior text can increase latency and may encourage unrelated
+output. VoxBridge therefore keeps recognition focused on decoding bounded audio
+utterances and provides a separate refinement backend for text that has already
+been recognized.
+
+An embedded llama.cpp model or an Ollama server can refine that text independently.
+The consuming application decides when and how to apply a completion, including
+agent prompts, fidelity checks, retries, document revision rules, and raw-text
+fallback. VoxBridge supplies the backend mechanics, not the product's editing policy.
+
+## Backend model
+
+### Speech recognition
+
+- **Faster Whisper/CTranslate2:** default high-efficiency runtime. CTranslate2
+  CUDA/FP16 is available on compatible NVIDIA systems; optimized processor inference
+  is its fallback. CTranslate2 model directories are separate artifacts from
+  whisper.cpp GGML files.
+- **whisper.cpp:** compact compatibility path with processor and Vulkan variants,
+  including broad NVIDIA and AMD graphics support.
+
+Both backends must produce the same normalized transcription result and participate
+in the same discovery, load, warmup, cancellation, status, and replacement lifecycle.
+
+### Text refinement
+
+- **Embedded llama.cpp:** in-process GGUF completion through runtime-selected native
+  variants.
+- **Ollama:** text-only completion through a user-configured local or network server.
+
+Recognition and refinement remain separate capabilities. A consuming application
+may use either refinement backend without changing the speech-recognition contract.
 
 ## Layout
 
-- `native/` — the C ABI for both engines and their shared CMake build:
-  - `shim/voxbridge_engine.h`/`.cpp` (whisper.cpp) and `shim/voxbridge_llm.h`/`.cpp`
-    (llama.cpp), selected via the `VOXBRIDGE_TARGET` CMake option.
-  - `native/whisper.cpp` and `native/llama.cpp` are git submodules pointing at upstream.
-- `src/lib.rs` - the whisper.cpp Rust loader: CPUID-based variant selection, dlopen via
-  [`libloading`](https://crates.io/crates/libloading), a safe wrapper over the C ABI.
-- `src/llm.rs` - the LLM side: an analogous `LlmEngine`/`LlmModel` loader for the embedded
-  llama.cpp path, a `LlmBackend` enum unifying it with an `OllamaRemote { base_url, model }`
-  proxy behind one `.complete()` call, and the Ollama HTTP client (`ureq`, no async runtime
-  needed here).
-- `scripts/build-engines.mjs` - builds the variant matrix for the current platform. Takes
-  an explicit `--out-dir` (or `VOXBRIDGE_OUT_DIR` env var) since this crate has no opinion
-  on where a consuming app wants its built libraries staged.
-- `examples/llm_smoke_test.rs`, `examples/ollama_remote_smoke_test.rs` - manual end-to-end
-  test harnesses against real GGUF models / a real Ollama instance, kept as runnable
-  examples rather than thrown away once they passed.
+- `native/` - native C ABIs and engine submodules:
+  - `shim/voxbridge_engine.h` and `.cpp` for whisper.cpp
+  - `shim/voxbridge_llm.h` and `.cpp` for llama.cpp
+  - `native/whisper.cpp` and `native/llama.cpp` as upstream git submodules
+- `src/lib.rs` - whisper.cpp loader, processor capability selection, dynamic library
+  loading, and safe Rust model wrapper
+- `src/llm.rs` - embedded llama.cpp loader plus the `LlmBackend` abstraction and
+  Ollama HTTP adapter
+- `src/faster_whisper.rs` - optional Faster Whisper worker process, request protocol,
+  model lifecycle, and normalized transcription API
+- `runtime/faster_whisper_worker.py` - persistent Faster Whisper/CTranslate2 worker
+  used by the optional managed runtime
+- `scripts/build-engines.mjs` - builds the native engine variant matrix into an
+  explicit output directory
+- `examples/` - manual end-to-end smoke tests for embedded and Ollama refinement
 
 ## Status
 
-Early / actively developed. Windows and Linux (x64) CPU + Vulkan GPU variants are
-implemented and tested for both the whisper.cpp and llama.cpp engines, and the Ollama
-remote-proxy path has been verified against a real instance. macOS is not yet implemented
-(see `scripts/build-engines.mjs`'s `buildMacosVariants` for the intended design). Not yet
-published to crates.io.
+Early and actively developed. Windows and Linux x64 processor and Vulkan variants
+are implemented and tested for whisper.cpp and llama.cpp. The Ollama adapter has
+been verified against a real server.
+
+The Faster Whisper backend is supported and has passed local Windows CUDA/FP16,
+processor fallback, model warmup, transcription, and backend-switch testing.
+Portable managed installation, packaging, cancellation, and progress integration
+are not finished. macOS is not implemented. VoxBridge is not published to crates.io.
 
 ## Roadmap
 
-- Add an optional Faster Whisper/CTranslate2 transcription backend behind the stable
-  VoxBridge API. Preserve the current whisper.cpp CPU/Vulkan backend as the default
-  and broad-hardware fallback.
-- Prototype Faster Whisper as a managed sidecar rather than embedding Python in a
-  consuming application. VoxBridge should own its lifecycle, health reporting,
-  model discovery/downloads, preload/unload, cancellation, and normalized transcript
-  results.
-- Expose explicit backend capabilities so consumers can select CTranslate2 CUDA on
-  compatible NVIDIA systems, optimized CTranslate2 CPU elsewhere, or the existing
-  Vulkan path on NVIDIA and AMD hardware.
-- Treat GGML and CTranslate2 model directories as separate artifacts. Switching must
-  preload the requested backend and model, invalidate stale recognition work, and
-  activate only at an utterance boundary.
-- Benchmark latency, word error rate, memory use, packaging size, and failure recovery
-  on Windows and Linux before promoting the backend from experimental status.
+- Complete portable packaging and managed installation for Faster
+  Whisper/CTranslate2 behind the stable VoxBridge API while retaining
+  whisper.cpp/Vulkan as the compact compatibility fallback.
+- Turn the local persistent worker into a portable optional managed runtime with
+  installation, health reporting, model discovery/downloads, preload/unload,
+  progress, cancellation, sanitized errors, and normalized results.
+- Expose explicit capabilities so consumers can choose CTranslate2 CUDA on
+  compatible NVIDIA systems, optimized CTranslate2 processor inference elsewhere,
+  or Vulkan on supported NVIDIA and AMD hardware.
+- Activate backend changes only at safe utterance boundaries and prevent stale work
+  from updating readiness or delivering results after a switch.
+- Benchmark latency, word error rate, memory use, package size, and failure recovery
+  on Windows and Linux.
+- Formalize stable transcription and refinement backend traits so consumers depend
+  on capabilities and normalized results instead of backend names.
+
+Broad provider routing and unrelated modalities are explicit non-goals unless a
+future consuming product establishes a concrete local-pipeline requirement.
 
 ## Building
 
-Requires CMake, a C/C++ toolchain, and (for the Vulkan variant) the Vulkan SDK.
+Native variants require CMake, a C/C++ toolchain, and the Vulkan SDK for Vulkan
+builds.
 
 ```bash
 git submodule update --init --recursive
@@ -105,18 +152,28 @@ node scripts/build-engines.mjs --out-dir dist
 cargo build
 ```
 
+The optional Faster Whisper runtime is not yet part of the standard build/package
+command.
+
 ## Credits
 
-- [ggerganov/whisper.cpp](https://github.com/ggerganov/whisper.cpp) (MIT) is the engine
-  VoxBridge builds and dispatches between - all the actual transcription work happens
-  there.
-- This project grew out of experiments on a fork of
-  [jackbrumley/voquill](https://github.com/jackbrumley/voquill) (AGPL-3.0), a voice
-  dictation app, while investigating CPU-crash and performance issues in its local
-  transcription backend. VoxBridge itself contains no code from that project - it's
-  written directly against whisper.cpp - so it's licensed independently under MIT. Thanks
-  to the voquill project for being the reason this exists.
+- [ggerganov/whisper.cpp](https://github.com/ggerganov/whisper.cpp) (MIT) performs
+  native Whisper inference. VoxBridge builds, selects, loads, and adapts it.
+- [ggml-org/llama.cpp](https://github.com/ggml-org/llama.cpp) (MIT) performs
+  embedded language-model inference. VoxBridge builds, selects, loads, and adapts it.
+- [SYSTRAN/faster-whisper](https://github.com/SYSTRAN/faster-whisper) (MIT) and
+  [OpenNMT/CTranslate2](https://github.com/OpenNMT/CTranslate2) (MIT) provide the
+  optional transcription pipeline and optimized Transformer inference. VoxBridge's
+  role is worker lifecycle and result adaptation, not their inference implementation.
+- [Ollama](https://ollama.com) provides the optional user-configured local or network
+  model service.
+- VoxBridge grew from work on a fork of
+  [FOSS Voquill](https://github.com/jackbrumley/voquill) (AGPL-3.0) while
+  investigating local transcription compatibility and performance. VoxBridge
+  contains no FOSS Voquill application code and is licensed independently, but that
+  project is the reason this runtime exists.
 
 ## License
 
-MIT - see [LICENSE](LICENSE).
+MIT - see [LICENSE](LICENSE). Dependencies, submodules, optional runtimes, and model
+weights retain their own licenses and terms.

@@ -2,7 +2,7 @@
 name = "voxbridge"
 version = "0.1.0"
 edition = "2021"
-description = "Runtime-dispatched, per-CPU/GPU-variant whisper.cpp engine loader (C shim + Rust host)."
+description = "Focused local speech-recognition and text-refinement runtime adapter."
 license = "MIT"
 repository = "https://github.com/tednv/VoxBridge"
 
